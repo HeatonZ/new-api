@@ -22,7 +22,117 @@ type openRouterRequestReasoning struct {
 	Exclude   bool   `json:"exclude,omitempty"`
 }
 
+const anthropicBillingHeaderMarker = "x-anthropic-billing-header"
+
+// stripVolatileCCH removes the volatile cch=<hex> segment from an Anthropic
+// billing header, keeping stable fields such as cc_version and cc_entrypoint
+// intact, and cleans up leftover separators. opencode/DeepSeek disk cache
+// matches on a byte-identical body prefix, and the per-turn cch value would
+// otherwise break prefix matching on every request.
+func stripVolatileCCH(s string) string {
+	idx := strings.Index(s, "cch=")
+	if idx >= 0 {
+		end := strings.IndexByte(s[idx:], ';')
+		if end < 0 {
+			s = s[:idx]
+		} else {
+			s = s[:idx] + s[idx+end:]
+		}
+	}
+	s = strings.ReplaceAll(s, ";;", ";")
+	s = strings.ReplaceAll(s, "; ;", ";")
+	s = strings.TrimSuffix(s, ";")
+	s = strings.TrimSuffix(s, "; ")
+	return strings.TrimSpace(s)
+}
+
+// isAnthropicBillingHeader reports whether the whole trimmed text is an
+// Anthropic billing header line (injected by Claude Code into system[0]).
+// A system block that mixes the header with real prompt content is not
+// treated as a pure billing header; it is only stripped of its volatile
+// cch segment instead.
+func isAnthropicBillingHeader(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(strings.ToLower(trimmed), anthropicBillingHeaderMarker) {
+		return false
+	}
+	// The header line ends at the first newline. If anything meaningful
+	// follows the header line, treat the block as prompt content.
+	if nl := strings.IndexByte(trimmed, '\n'); nl >= 0 {
+		after := strings.TrimSpace(trimmed[nl:])
+		return after == ""
+	}
+	rest := trimmed[len(anthropicBillingHeaderMarker):]
+	return !strings.Contains(rest, "\n") && strings.Contains(rest, "=")
+}
+
+// stripAnthropicBillingSystem removes the per-request billing header that
+// Claude Code injects into system[0]. Its cch=<hex> segment changes on every
+// turn and, after conversion, sits at the very front of the outbound system
+// prefix, destroying byte-identical prefix matching for opencode/DeepSeek
+// cache. A string system that is entirely the billing header is dropped;
+// otherwise the volatile cch segment is stripped from each block.
+func stripAnthropicBillingSystem(req *dto.ClaudeRequest) {
+	if req.System == nil {
+		return
+	}
+	if req.IsStringSystem() {
+		system := req.GetStringSystem()
+		if isAnthropicBillingHeader(system) {
+			req.System = nil
+			return
+		}
+		req.SetStringSystem(stripVolatileCCH(system))
+		return
+	}
+	systems := req.ParseSystem()
+	if len(systems) == 0 {
+		return
+	}
+	kept := make([]dto.ClaudeMediaMessage, 0, len(systems))
+	for _, system := range systems {
+		if system.Text == nil {
+			kept = append(kept, system)
+			continue
+		}
+		text := *system.Text
+		if isAnthropicBillingHeader(text) {
+			continue
+		}
+		cleaned := stripVolatileCCH(text)
+		system.Text = &cleaned
+		kept = append(kept, system)
+	}
+	if len(kept) == 0 {
+		req.System = nil
+		return
+	}
+	req.System = kept
+}
+
+// rewriteHistorySystemToUser rewrites mid-conversation system reminders
+// (tool hints, date changes, etc. injected by Claude Code) to role "user".
+// OpenAI-compatible upstreams hoist every system message to the front of the
+// prompt, so an inserted reminder rewrites the whole system prefix and
+// evicts everything after it from cache. Moving reminders to the tail keeps
+// the shared prefix byte-identical across turns. The top-level
+// request.System (the real system prompt) is left untouched.
+func rewriteHistorySystemToUser(req *dto.ClaudeRequest) {
+	for i := range req.Messages {
+		if strings.EqualFold(req.Messages[i].Role, "system") {
+			req.Messages[i].Role = "user"
+		}
+	}
+}
+
 func ClaudeMessagesRequestToOpenAIChat(claudeRequest dto.ClaudeRequest, info convmeta.Meta) (*dto.GeneralOpenAIRequest, error) {
+	// Cache-stability preprocessing for opencode/DeepSeek: opencode matches
+	// disk cache on the byte-identical body prefix, so strip the volatile
+	// per-turn billing header Claude Code injects into system[0] and demote
+	// mid-conversation system reminders to user so they land at the tail.
+	stripAnthropicBillingSystem(&claudeRequest)
+	rewriteHistorySystemToUser(&claudeRequest)
+
 	openAIRequest := dto.GeneralOpenAIRequest{
 		Model:       claudeRequest.Model,
 		Temperature: claudeRequest.Temperature,
