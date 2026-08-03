@@ -52,6 +52,11 @@ func isOpenCodeUpstream(info *relaycommon.RelayInfo) bool {
 //     namespace into its child tools as top-level functions named
 //     "<namespace>.<tool>" (or "mcp__ns__tool" style), because no OpenAI-
 //     compatible upstream understands the namespace wrapper.
+//   - any other non-function type (e.g. "tool_search"): convert to function
+//     when a usable name exists, otherwise drop the entry. opencode's serde
+//     rejects every type except "function", so passing an unknown type
+//     through guarantees a 400; new client-side tool types must degrade
+//     instead of breaking the whole request.
 func normalizeToolCallsForOpenCode(toolCalls []dto.ToolCallRequest) []dto.ToolCallRequest {
 	out := toolCalls[:0:0]
 	changed := false
@@ -121,6 +126,41 @@ func normalizeToolCallsForOpenCode(toolCalls []dto.ToolCallRequest) []dto.ToolCa
 				}
 			}
 		default:
+			if tc.Type == "function" {
+				out = append(out, tc)
+				continue
+			}
+			// Unknown non-function type (e.g. "tool_search"). Convert to
+			// function when a name is available (the DTO already backfills
+			// flat top-level fields into .function at parse time), otherwise
+			// drop: the upstream serde would reject the entry either way.
+			changed = true
+			tc.Type = "function"
+			if tc.Function.Name == "" {
+				rawJSON := tc.Raw
+				if len(rawJSON) == 0 {
+					rawJSON = tc.Custom
+				}
+				var raw map[string]any
+				if len(rawJSON) > 0 && kitutil.Unmarshal(rawJSON, &raw) == nil {
+					if name := strings.TrimSpace(kitutil.Interface2String(raw["name"])); name != "" {
+						tc.Function.Name = name
+					}
+					if tc.Function.Description == "" {
+						tc.Function.Description = kitutil.Interface2String(raw["description"])
+					}
+					if tc.Function.Parameters == nil {
+						if schema, ok := raw["parameters"]; ok {
+							tc.Function.Parameters = schema
+						} else if schema, ok := raw["input_schema"]; ok {
+							tc.Function.Parameters = schema
+						}
+					}
+				}
+			}
+			if tc.Function.Name == "" {
+				continue
+			}
 			out = append(out, tc)
 		}
 	}

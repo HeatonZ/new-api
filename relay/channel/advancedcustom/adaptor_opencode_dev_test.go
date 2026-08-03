@@ -146,6 +146,32 @@ func TestToolCallRequestUnmarshalPreservesRaw(t *testing.T) {
 	assert.NotContains(t, string(out), "\"raw\"", "raw field must not serialize")
 }
 
+func TestNormalizeUnknownToolTypesForOpenCode(t *testing.T) {
+	// Variant #8 seen in production: codex-family clients declare tools with
+	// type "tool_search"; opencode's serde only accepts "function". Unknown
+	// types must convert when named, or be dropped when unnamed — never pass
+	// through, which guarantees an upstream 400.
+	req := &dto.GeneralOpenAIRequest{
+		Tools: []dto.ToolCallRequest{
+			{Type: "tool_search", Function: dto.FunctionRequest{Name: "tool_search"}},
+			{Type: "tool_search", Raw: json.RawMessage(`{"type":"tool_search","name":"find_tool","description":"search tools","input_schema":{"type":"object"}}`)},
+			{Type: "some_future_type"},
+			{Type: "function", Function: dto.FunctionRequest{Name: "lookup"}},
+		},
+	}
+
+	normalizeRequestForOpenCode(req)
+
+	require.Len(t, req.Tools, 3, "named unknown types converted, unnamed dropped")
+	assert.Equal(t, "function", req.Tools[0].Type, "tool_search with parsed name -> function")
+	assert.Equal(t, "tool_search", req.Tools[0].Function.Name)
+	assert.Equal(t, "function", req.Tools[1].Type, "tool_search with raw name -> function")
+	assert.Equal(t, "find_tool", req.Tools[1].Function.Name, "name recovered from raw JSON")
+	assert.Equal(t, "search tools", req.Tools[1].Function.Description)
+	require.NotNil(t, req.Tools[1].Function.Parameters, "input_schema aliased to parameters")
+	assert.Equal(t, "lookup", req.Tools[2].Function.Name, "plain function untouched")
+}
+
 func TestToolCallRequestFlatFunctionBackfill(t *testing.T) {
 	// Chat clients (Codex namespace children, flat declarations) put name at the
 	// top level instead of nested under function; the DTO must backfill it.
