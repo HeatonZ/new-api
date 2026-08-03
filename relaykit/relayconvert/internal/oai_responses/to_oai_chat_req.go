@@ -206,7 +206,11 @@ func responsesInputItemToChatMessages(item map[string]any, messages []dto.Messag
 		// represents past reasoning as a "reasoning" item in input, which appears
 		// immediately BEFORE the assistant message it belongs to. Stash the text
 		// so the next assistant message absorbs it as reasoning_content.
-		return append(messages, dto.Message{Role: "", Content: "", ReasoningContent: ptr(responsesReasoningItemText(item))}), nil
+		reasoningText := responsesReasoningItemText(item)
+		if reasoningText == "" {
+			return messages, nil
+		}
+		return append(messages, dto.Message{Role: "", Content: "", ReasoningContent: &reasoningText}), nil
 	}
 
 	role := strings.TrimSpace(kitutil.Interface2String(item["role"]))
