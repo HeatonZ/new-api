@@ -145,3 +145,26 @@ func TestToolCallRequestUnmarshalPreservesRaw(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(out), "\"raw\"", "raw field must not serialize")
 }
+
+func TestToolCallRequestFlatFunctionBackfill(t *testing.T) {
+	// Chat clients (Codex namespace children, flat declarations) put name at the
+	// top level instead of nested under function; the DTO must backfill it.
+	var tc dto.ToolCallRequest
+	require.NoError(t, json.Unmarshal(json.RawMessage(`{"type":"function","name":"lookup","description":"find things","input_schema":{"type":"object"}}`), &tc))
+	assert.Equal(t, "function", tc.Type)
+	assert.Equal(t, "lookup", tc.Function.Name, "top-level name backfilled into function.name")
+	assert.Equal(t, "find things", tc.Function.Description, "top-level description backfilled")
+	require.NotNil(t, tc.Function.Parameters, "input_schema aliased to parameters")
+
+	// nested function form still works
+	var nested dto.ToolCallRequest
+	require.NoError(t, json.Unmarshal(json.RawMessage(`{"type":"function","function":{"name":"nested"}}`), &nested))
+	assert.Equal(t, "nested", nested.Function.Name, "nested function.name untouched")
+
+	// namespace with flat children: top-level name preserved in Raw, children
+	// backfilled at parse time
+	var ns dto.ToolCallRequest
+	require.NoError(t, json.Unmarshal(json.RawMessage(`{"type":"namespace","name":"mcp__fs__","tools":[{"type":"function","name":"read","parameters":{"type":"object"}}]}`), &ns))
+	assert.Equal(t, "namespace", ns.Type)
+	assert.NotEmpty(t, ns.Raw, "namespace raw preserved")
+}

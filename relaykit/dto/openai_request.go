@@ -273,6 +273,28 @@ func (t *ToolCallRequest) UnmarshalJSON(data []byte) error {
 	if len(data) > 0 {
 		t.Raw = append(json.RawMessage(nil), data...)
 	}
+	// Some clients (Codex MCP namespace children, flat tool declarations) put
+	// name/description/input_schema at the tool's top level instead of nested
+	// under "function". Backfill Function from those when the nested fields are
+	// absent so chat-path normalization sees the real names.
+	var raw map[string]any
+	if len(t.Raw) > 0 && json.Unmarshal(t.Raw, &raw) == nil {
+		if t.Function.Name == "" {
+			if name, ok := raw["name"].(string); ok && strings.TrimSpace(name) != "" {
+				t.Function.Name = strings.TrimSpace(name)
+			}
+		}
+		if t.Function.Description == "" {
+			if desc, ok := raw["description"].(string); ok {
+				t.Function.Description = desc
+			}
+		}
+		if t.Function.Parameters == nil {
+			if schema, ok := raw["input_schema"]; ok {
+				t.Function.Parameters = schema
+			}
+		}
+	}
 	return nil
 }
 
