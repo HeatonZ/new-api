@@ -42,43 +42,101 @@ func isOpenCodeUpstream(info *relaycommon.RelayInfo) bool {
 	return strings.Contains(baseURL, "opencode.ai")
 }
 
-// normalizeToolCallsForOpenCode rewrites custom tool entries (tool_calls or
-// tools declarations) into the "function" shape opencode Console Go's serde
-// accepts. The custom payload lives in .custom (raw JSON) while the standard
-// function fields (name/description/parameters) sit at the top level of the
-// Responses API tool object, so they must be copied into .function before the
-// type is flipped.
-func normalizeToolCallsForOpenCode(toolCalls []dto.ToolCallRequest) bool {
+// normalizeToolCallsForOpenCode rewrites non-function tool entries (tool_calls
+// or tools declarations) into the "function" shape opencode Console Go's serde
+// accepts:
+//   - custom tools: flip type to function and backfill .function fields from
+//     the raw custom payload (Responses custom tools carry name/description/
+//     input_schema at top level; chat upstreams expect function.name etc).
+//   - namespace tools (Codex MCP wrapper, openai/codex#23186): flatten each
+//     namespace into its child tools as top-level functions named
+//     "<namespace>.<tool>" (or "mcp__ns__tool" style), because no OpenAI-
+//     compatible upstream understands the namespace wrapper.
+func normalizeToolCallsForOpenCode(toolCalls []dto.ToolCallRequest) []dto.ToolCallRequest {
+	out := toolCalls[:0:0]
 	changed := false
 	for j := range toolCalls {
-		if toolCalls[j].Type != dto.CustomType {
-			continue
-		}
-		toolCalls[j].Type = "function"
-		changed = true
-		// Fill .function from the raw custom payload when the standard fields
-		// are absent (Responses custom tools carry name/description/
-		// input_schema at top level; chat upstreams expect function.name etc).
-		if toolCalls[j].Function.Name == "" || len(toolCalls[j].Custom) > 0 {
-			var raw map[string]any
-			if len(toolCalls[j].Custom) > 0 && kitutil.Unmarshal(toolCalls[j].Custom, &raw) == nil {
-				if name := strings.TrimSpace(kitutil.Interface2String(raw["name"])); name != "" {
-					toolCalls[j].Function.Name = name
-				}
-				if toolCalls[j].Function.Description == "" {
-					toolCalls[j].Function.Description = kitutil.Interface2String(raw["description"])
-				}
-				if toolCalls[j].Function.Parameters == nil {
-					// Responses custom tools declare input_schema; chat upstreams
-					// expect parameters. Alias it when present.
-					if schema, ok := raw["input_schema"]; ok {
-						toolCalls[j].Function.Parameters = schema
+		tc := toolCalls[j]
+		switch tc.Type {
+		case dto.CustomType:
+			tc.Type = "function"
+			changed = true
+			// Fill .function from the raw custom payload when the standard fields
+			// are absent (Responses custom tools carry name/description/
+			// input_schema at top level; chat upstreams expect function.name etc).
+			if tc.Function.Name == "" || len(tc.Custom) > 0 {
+				var raw map[string]any
+				if len(tc.Custom) > 0 && kitutil.Unmarshal(tc.Custom, &raw) == nil {
+					if name := strings.TrimSpace(kitutil.Interface2String(raw["name"])); name != "" {
+						tc.Function.Name = name
+					}
+					if tc.Function.Description == "" {
+						tc.Function.Description = kitutil.Interface2String(raw["description"])
+					}
+					if tc.Function.Parameters == nil {
+						// Responses custom tools declare input_schema; chat upstreams
+						// expect parameters. Alias it when present.
+						if schema, ok := raw["input_schema"]; ok {
+							tc.Function.Parameters = schema
+						}
 					}
 				}
 			}
+			out = append(out, tc)
+		case "namespace":
+			// Codex wraps MCP tools as {"type":"namespace","name":"mcp__x__",
+			// "tools":[{function...}]}. opencode zen/go rejects the wrapper, so
+			// flatten children into top-level functions.
+			changed = true
+			ns := tc
+			var raw map[string]any
+			if len(ns.Custom) > 0 && kitutil.Unmarshal(ns.Custom, &raw) == nil {
+				prefix := strings.TrimSpace(kitutil.Interface2String(raw["name"]))
+				if tools, ok := raw["tools"].([]any); ok {
+					for _, t := range tools {
+						tm, ok := t.(map[string]any)
+						if !ok {
+							continue
+						}
+						child := dto.ToolCallRequest{Type: "function"}
+						if name := strings.TrimSpace(kitutil.Interface2String(tm["name"])); name != "" {
+							if prefix != "" {
+								child.Function.Name = prefix + "_" + name
+							} else {
+								child.Function.Name = name
+							}
+						}
+						child.Function.Description = kitutil.Interface2String(tm["description"])
+						if schema, ok := tm["parameters"]; ok {
+							child.Function.Parameters = schema
+						} else if schema, ok := tm["input_schema"]; ok {
+							child.Function.Parameters = schema
+						}
+						out = append(out, child)
+					}
+				}
+			}
+		default:
+			out = append(out, tc)
 		}
 	}
-	return changed
+	if !changed {
+		return toolCalls
+	}
+	return out
+}
+
+// toolCallsChanged reports whether normalization altered the tool calls.
+func toolCallsChanged(before, after []dto.ToolCallRequest) bool {
+	if len(before) != len(after) {
+		return true
+	}
+	for i := range before {
+		if before[i].Type != after[i].Type || before[i].Function.Name != after[i].Function.Name {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeRequestForOpenCode adapts a chat request to what opencode
@@ -96,13 +154,16 @@ func normalizeRequestForOpenCode(request *dto.GeneralOpenAIRequest) {
 			request.Messages[i].Role = "system"
 		}
 		toolCalls := request.Messages[i].ParseToolCalls()
-		if len(toolCalls) > 0 && normalizeToolCallsForOpenCode(toolCalls) {
-			request.Messages[i].SetToolCalls(toolCalls)
+		if len(toolCalls) > 0 {
+			normalized := normalizeToolCallsForOpenCode(toolCalls)
+			if len(normalized) != len(toolCalls) || toolCallsChanged(toolCalls, normalized) {
+				request.Messages[i].SetToolCalls(normalized)
+			}
 		}
 	}
 	// tools declarations carry the same type field as tool_calls and are
 	// subject to the same serde constraint upstream.
-	normalizeToolCallsForOpenCode(request.Tools)
+	request.Tools = normalizeToolCallsForOpenCode(request.Tools)
 }
 
 type Adaptor struct {

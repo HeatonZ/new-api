@@ -79,3 +79,33 @@ func TestNormalizeRequestForOpenCode(t *testing.T) {
 	// nil request is a no-op
 	normalizeRequestForOpenCode(nil)
 }
+
+func TestNormalizeNamespaceToolsForOpenCode(t *testing.T) {
+	// Codex wraps MCP tools in {"type":"namespace","name":"mcp__open_websearch__",
+	// "tools":[{function...}]} (openai/codex#23186). opencode zen/go rejects the
+	// wrapper, so each child must be flattened into a top-level function tool.
+	req := &dto.GeneralOpenAIRequest{
+		Tools: []dto.ToolCallRequest{
+			{Type: "namespace", Custom: json.RawMessage(`{
+				"type": "namespace",
+				"name": "mcp__open_websearch__",
+				"tools": [
+					{"type": "function", "name": "search", "description": "web search", "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}},
+					{"type": "function", "name": "fetchWebContent", "description": "fetch url", "input_schema": {"type": "object"}}
+				]
+			}`)},
+			{Type: "function", Function: dto.FunctionRequest{Name: "lookup"}},
+		},
+	}
+
+	normalizeRequestForOpenCode(req)
+
+	require.Len(t, req.Tools, 3, "namespace flattens into 2 children + 1 function")
+	assert.Equal(t, "function", req.Tools[0].Type)
+	assert.Equal(t, "mcp__open_websearch___search", req.Tools[0].Function.Name, "child name prefixed with namespace")
+	assert.Equal(t, "web search", req.Tools[0].Function.Description)
+	require.NotNil(t, req.Tools[0].Function.Parameters, "parameters carried over")
+	assert.Equal(t, "mcp__open_websearch___fetchWebContent", req.Tools[1].Function.Name)
+	require.NotNil(t, req.Tools[1].Function.Parameters, "input_schema aliased to parameters")
+	assert.Equal(t, "lookup", req.Tools[2].Function.Name, "plain function untouched")
+}
