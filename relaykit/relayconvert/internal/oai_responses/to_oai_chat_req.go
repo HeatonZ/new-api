@@ -158,12 +158,20 @@ func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Mess
 			}
 			messages = nextMessages
 		}
-		// Drop a trailing reasoning placeholder (a "reasoning" item whose
-		// assistant message never followed). It has no chat equivalent.
-		if len(messages) > 0 && messages[len(messages)-1].Role == "" {
-			messages = messages[:len(messages)-1]
+		// Drop any reasoning placeholders (Role=="") that were not reclaimed by
+		// a following assistant message. A placeholder can end up mid-array when
+		// a reasoning item is followed by a tool-output item (whose branch
+		// appends directly and never consumes the placeholder). A placeholder has
+		// no chat equivalent and serializing Role=="" would 400 upstream
+		// (unknown variant ``).
+		filtered := messages[:0]
+		for _, m := range messages {
+			if m.Role == "" {
+				continue
+			}
+			filtered = append(filtered, m)
 		}
-		return messages, nil
+		return filtered, nil
 	default:
 		return nil, fmt.Errorf("unsupported responses input type %q", kitutil.GetJsonType(req.Input))
 	}

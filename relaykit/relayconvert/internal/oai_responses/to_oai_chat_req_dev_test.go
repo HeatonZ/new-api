@@ -116,6 +116,21 @@ func TestResponsesRequestToChatCompletionsConversion(t *testing.T) {
 				{Role: "tool", ToolCallId: "call_1", Content: "result"},
 			},
 		},
+		{
+			// A reasoning item followed directly by a tool-output item leaves the
+			// placeholder mid-array (tool branch appends without consuming it).
+			// It must be dropped, never serialized with Role=="".
+			name: "stray reasoning placeholder before tool output is dropped",
+			input: json.RawMessage(`[
+				{"role": "user", "content": "run it"},
+				{"type": "reasoning", "id": "rs_3", "summary": [{"type": "summary_text", "text": "orphan before tool"}]},
+				{"type": "custom_tool_call_output", "id": "ct_1", "role": "custom", "output": "done"}
+			]`),
+			want: []dto.Message{
+				{Role: "user", Content: "run it"},
+				{Role: "tool", ToolCallId: "ct_1", Content: "done"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
