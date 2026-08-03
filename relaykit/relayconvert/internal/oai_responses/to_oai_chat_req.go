@@ -313,9 +313,16 @@ func responsesCustomToolCallItemToChatToolCall(item map[string]any) (dto.ToolCal
 	if err != nil {
 		return dto.ToolCallRequest{}, err
 	}
+	// GPT-5 custom (freeform) tool calls carry type "custom" in the Responses
+	// API, but chat/completions tool_calls[].type only supports "function"
+	// upstreams (opencode zen/go, DeepSeek) reject "custom" with 400
+	// "unknown variant `custom`, expected `function`". Normalize the type to
+	// "function" and keep the raw custom payload in the Custom field (serde
+	// ignores unknown fields by default, so supporting upstreams can still
+	// read it).
 	return dto.ToolCallRequest{
 		ID:     responsesCallID(item),
-		Type:   dto.CustomType,
+		Type:   "function",
 		Custom: raw,
 		Function: dto.FunctionRequest{
 			Name:      strings.TrimSpace(kitutil.Interface2String(item["name"])),

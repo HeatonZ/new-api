@@ -60,7 +60,7 @@ func TestResponsesRequestToChatCompletionsDeveloperRoleNormalized(t *testing.T) 
 			]`),
 			want: []dto.Message{
 				{Role: "user", Content: "run the tool"},
-				{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"ct_1","type":"custom","custom":{"type":"custom_tool_call","id":"ct_1","name":"web_search","input":"{\"q\":\"x\"}"},"function":{"name":"web_search","arguments":"{\"q\":\"x\"}"}}]`)},
+				{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"ct_1","type":"function","custom":{"type":"custom_tool_call","id":"ct_1","name":"web_search","input":"{\"q\":\"x\"}"},"function":{"name":"web_search","arguments":"{\"q\":\"x\"}"}}]`)},
 				{Role: "tool", ToolCallId: "ct_1", Content: "search results"},
 			},
 		},
