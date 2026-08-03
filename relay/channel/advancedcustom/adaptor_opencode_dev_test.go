@@ -45,7 +45,7 @@ func TestNormalizeRequestForOpenCode(t *testing.T) {
 			{Role: "tool", ToolCallId: "ct_1", Content: "result"},
 		},
 		Tools: []dto.ToolCallRequest{
-			{Type: "custom", Function: dto.FunctionRequest{Name: "web_search"}},
+			{Type: "custom", Custom: json.RawMessage(`{"type":"custom","name":"web_search","description":"search the web","input_schema":{"type":"object","properties":{"q":{"type":"string"}}}}`)},
 			{Type: "function", Function: dto.FunctionRequest{Name: "lookup"}},
 		},
 	}
@@ -70,6 +70,11 @@ func TestNormalizeRequestForOpenCode(t *testing.T) {
 	require.Len(t, req.Tools, 2)
 	assert.Equal(t, "function", req.Tools[0].Type, "custom tool declaration type -> function")
 	assert.Equal(t, "function", req.Tools[1].Type, "function tool declaration untouched")
+	// function fields backfilled from the raw custom payload so opencode's
+	// serde gets a non-empty name
+	assert.Equal(t, "web_search", req.Tools[0].Function.Name, "custom tool name backfilled into function.name")
+	assert.Equal(t, "search the web", req.Tools[0].Function.Description, "custom tool description backfilled")
+	require.NotNil(t, req.Tools[0].Function.Parameters, "input_schema aliased to parameters")
 
 	// nil request is a no-op
 	normalizeRequestForOpenCode(nil)

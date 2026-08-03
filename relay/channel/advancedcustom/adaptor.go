@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -41,6 +42,45 @@ func isOpenCodeUpstream(info *relaycommon.RelayInfo) bool {
 	return strings.Contains(baseURL, "opencode.ai")
 }
 
+// normalizeToolCallsForOpenCode rewrites custom tool entries (tool_calls or
+// tools declarations) into the "function" shape opencode Console Go's serde
+// accepts. The custom payload lives in .custom (raw JSON) while the standard
+// function fields (name/description/parameters) sit at the top level of the
+// Responses API tool object, so they must be copied into .function before the
+// type is flipped.
+func normalizeToolCallsForOpenCode(toolCalls []dto.ToolCallRequest) bool {
+	changed := false
+	for j := range toolCalls {
+		if toolCalls[j].Type != dto.CustomType {
+			continue
+		}
+		toolCalls[j].Type = "function"
+		changed = true
+		// Fill .function from the raw custom payload when the standard fields
+		// are absent (Responses custom tools carry name/description/
+		// input_schema at top level; chat upstreams expect function.name etc).
+		if toolCalls[j].Function.Name == "" || len(toolCalls[j].Custom) > 0 {
+			var raw map[string]any
+			if len(toolCalls[j].Custom) > 0 && kitutil.Unmarshal(toolCalls[j].Custom, &raw) == nil {
+				if name := strings.TrimSpace(kitutil.Interface2String(raw["name"])); name != "" {
+					toolCalls[j].Function.Name = name
+				}
+				if toolCalls[j].Function.Description == "" {
+					toolCalls[j].Function.Description = kitutil.Interface2String(raw["description"])
+				}
+				if toolCalls[j].Function.Parameters == nil {
+					// Responses custom tools declare input_schema; chat upstreams
+					// expect parameters. Alias it when present.
+					if schema, ok := raw["input_schema"]; ok {
+						toolCalls[j].Function.Parameters = schema
+					}
+				}
+			}
+		}
+	}
+	return changed
+}
+
 // normalizeRequestForOpenCode adapts a chat request to what opencode
 // Console Go's serde accepts: developer -> system, and custom tool type ->
 // function in both tool_calls (messages) and tools declarations. The raw
@@ -50,29 +90,19 @@ func normalizeRequestForOpenCode(request *dto.GeneralOpenAIRequest) {
 	if request == nil {
 		return
 	}
-	normalizeToolCalls := func(toolCalls []dto.ToolCallRequest) bool {
-		changed := false
-		for j := range toolCalls {
-			if toolCalls[j].Type == dto.CustomType {
-				toolCalls[j].Type = "function"
-				changed = true
-			}
-		}
-		return changed
-	}
 
 	for i := range request.Messages {
 		if request.Messages[i].Role == "developer" {
 			request.Messages[i].Role = "system"
 		}
 		toolCalls := request.Messages[i].ParseToolCalls()
-		if len(toolCalls) > 0 && normalizeToolCalls(toolCalls) {
+		if len(toolCalls) > 0 && normalizeToolCallsForOpenCode(toolCalls) {
 			request.Messages[i].SetToolCalls(toolCalls)
 		}
 	}
 	// tools declarations carry the same type field as tool_calls and are
 	// subject to the same serde constraint upstream.
-	normalizeToolCalls(request.Tools)
+	normalizeToolCallsForOpenCode(request.Tools)
 }
 
 type Adaptor struct {
