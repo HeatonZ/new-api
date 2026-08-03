@@ -31,25 +31,31 @@ func TestIsOpenCodeUpstream(t *testing.T) {
 	}
 }
 
-func TestNormalizeMessagesForOpenCode(t *testing.T) {
+func TestNormalizeRequestForOpenCode(t *testing.T) {
 	toolCallsRaw := json.RawMessage(`[
 		{"id":"ct_1","type":"custom","custom":{"type":"custom_tool_call","id":"ct_1","name":"web_search","input":"{}"},"function":{"name":"web_search","arguments":"{}"}},
 		{"id":"fc_2","type":"function","function":{"name":"lookup","arguments":"{}"}}
 	]`)
 
-	messages := []dto.Message{
-		{Role: "developer", Content: "rules"},
-		{Role: "user", Content: "hi"},
-		{Role: "assistant", ToolCalls: toolCallsRaw},
-		{Role: "tool", ToolCallId: "ct_1", Content: "result"},
+	req := &dto.GeneralOpenAIRequest{
+		Messages: []dto.Message{
+			{Role: "developer", Content: "rules"},
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", ToolCalls: toolCallsRaw},
+			{Role: "tool", ToolCallId: "ct_1", Content: "result"},
+		},
+		Tools: []dto.ToolCallRequest{
+			{Type: "custom", Function: dto.FunctionRequest{Name: "web_search"}},
+			{Type: "function", Function: dto.FunctionRequest{Name: "lookup"}},
+		},
 	}
 
-	got := normalizeMessagesForOpenCode(messages)
+	normalizeRequestForOpenCode(req)
 
-	assert.Equal(t, "system", got[0].Role, "developer should become system")
-	assert.Equal(t, "user", got[1].Role, "user untouched")
+	assert.Equal(t, "system", req.Messages[0].Role, "developer should become system")
+	assert.Equal(t, "user", req.Messages[1].Role, "user untouched")
 
-	toolCalls := got[2].ParseToolCalls()
+	toolCalls := req.Messages[2].ParseToolCalls()
 	require.Len(t, toolCalls, 2)
 	assert.Equal(t, "function", toolCalls[0].Type, "custom tool call type -> function")
 	assert.Equal(t, "function", toolCalls[1].Type, "function tool call untouched")
@@ -60,7 +66,11 @@ func TestNormalizeMessagesForOpenCode(t *testing.T) {
 		return m["type"].(string)
 	}(), "raw custom payload preserved")
 
-	// non-opencode normalization must not touch developer
-	noCode := normalizeMessagesForOpenCode(nil)
-	assert.Nil(t, noCode)
+	// tools declarations normalized the same way
+	require.Len(t, req.Tools, 2)
+	assert.Equal(t, "function", req.Tools[0].Type, "custom tool declaration type -> function")
+	assert.Equal(t, "function", req.Tools[1].Type, "function tool declaration untouched")
+
+	// nil request is a no-op
+	normalizeRequestForOpenCode(nil)
 }

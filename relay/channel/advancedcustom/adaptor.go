@@ -41,19 +41,16 @@ func isOpenCodeUpstream(info *relaycommon.RelayInfo) bool {
 	return strings.Contains(baseURL, "opencode.ai")
 }
 
-// normalizeMessagesForOpenCode adapts chat messages to what opencode
-// Console Go's serde accepts: developer -> system and tool_calls[].type
-// custom -> function. The raw custom payload (tool_calls[].custom) is
-// preserved for upstreams that can read it.
-func normalizeMessagesForOpenCode(messages []dto.Message) []dto.Message {
-	for i := range messages {
-		if messages[i].Role == "developer" {
-			messages[i].Role = "system"
-		}
-		toolCalls := messages[i].ParseToolCalls()
-		if len(toolCalls) == 0 {
-			continue
-		}
+// normalizeRequestForOpenCode adapts a chat request to what opencode
+// Console Go's serde accepts: developer -> system, and custom tool type ->
+// function in both tool_calls (messages) and tools declarations. The raw
+// custom payload (tool_calls[].custom) is preserved for upstreams that can
+// read it.
+func normalizeRequestForOpenCode(request *dto.GeneralOpenAIRequest) {
+	if request == nil {
+		return
+	}
+	normalizeToolCalls := func(toolCalls []dto.ToolCallRequest) bool {
 		changed := false
 		for j := range toolCalls {
 			if toolCalls[j].Type == dto.CustomType {
@@ -61,11 +58,21 @@ func normalizeMessagesForOpenCode(messages []dto.Message) []dto.Message {
 				changed = true
 			}
 		}
-		if changed {
-			messages[i].SetToolCalls(toolCalls)
+		return changed
+	}
+
+	for i := range request.Messages {
+		if request.Messages[i].Role == "developer" {
+			request.Messages[i].Role = "system"
+		}
+		toolCalls := request.Messages[i].ParseToolCalls()
+		if len(toolCalls) > 0 && normalizeToolCalls(toolCalls) {
+			request.Messages[i].SetToolCalls(toolCalls)
 		}
 	}
-	return messages
+	// tools declarations carry the same type field as tool_calls and are
+	// subject to the same serde constraint upstream.
+	normalizeToolCalls(request.Tools)
 }
 
 type Adaptor struct {
@@ -87,7 +94,7 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 
 func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
 	if isOpenCodeUpstream(info) {
-		request.Messages = normalizeMessagesForOpenCode(request.Messages)
+		normalizeRequestForOpenCode(request)
 	}
 	converter, err := a.resolveForConversion(c, info)
 	if err != nil {
@@ -177,7 +184,7 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 			return nil, fmt.Errorf("expected OpenAI chat completions request, got %T", result.Value)
 		}
 		if isOpenCodeUpstream(info) {
-			chatRequest.Messages = normalizeMessagesForOpenCode(chatRequest.Messages)
+			normalizeRequestForOpenCode(chatRequest)
 		}
 		return a.convertOpenAICompatibleRequest(c, info, chatRequest)
 	case relayconvert.ConverterOpenAIResponsesToGemini:
