@@ -245,6 +245,17 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
+	// 归一化 developer role -> system：
+	// OpenAI Responses API 允许 "developer"（语义上等于 system 指令），但许多 OpenAI 兼容上游
+	// （DeepSeek、opencode Console Go 等）只认 system/user/assistant/tool，
+	// developer 直接透传会 400 "unknown variant `developer`"。
+	// developer 与 system 语义等价（OpenAI 官方定义），归一化是确定性转换，不破坏缓存前缀。
+	// 若上游是 OpenAI o 系列（支持 developer），下方 o 系列适配会把 messages[0] 再改回 developer，行为不变。
+	for i := range request.Messages {
+		if request.Messages[i].Role == "developer" {
+			request.Messages[i].Role = "system"
+		}
+	}
 	if info.ChannelType != constant.ChannelTypeOpenAI && info.ChannelType != constant.ChannelTypeAzure {
 		request.StreamOptions = nil
 	}
