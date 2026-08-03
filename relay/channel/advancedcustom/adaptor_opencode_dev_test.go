@@ -146,6 +146,34 @@ func TestToolCallRequestUnmarshalPreservesRaw(t *testing.T) {
 	assert.NotContains(t, string(out), "\"raw\"", "raw field must not serialize")
 }
 
+func TestBackfillReasoningContentForToolCallAssistants(t *testing.T) {
+	// DeepSeek thinking mode (behind opencode) 400s when an assistant message
+	// carrying tool_calls has no reasoning_content. Codex clients send
+	// reasoning items with only encrypted_content (no extractable text), so
+	// the converter cannot recover the real reasoning — a placeholder must be
+	// synthesized. Plain assistant history does not need one (verified against
+	// the live upstream).
+	existing := "actual reasoning"
+	req := &dto.GeneralOpenAIRequest{
+		Messages: []dto.Message{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", Content: "plain history"},
+			{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"c1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]`)},
+			{Role: "tool", ToolCallId: "c1", Content: "sunny"},
+			{Role: "assistant", ReasoningContent: &existing, ToolCalls: json.RawMessage(`[{"id":"c2","type":"function","function":{"name":"lookup","arguments":"{}"}}]`)},
+			{Role: "tool", ToolCallId: "c2", Content: "found"},
+		},
+	}
+
+	normalizeRequestForOpenCode(req)
+
+	assert.Nil(t, req.Messages[1].ReasoningContent, "plain assistant history untouched")
+	require.NotNil(t, req.Messages[2].ReasoningContent, "tool-call assistant without reasoning gets placeholder")
+	assert.NotEmpty(t, *req.Messages[2].ReasoningContent)
+	require.NotNil(t, req.Messages[4].ReasoningContent)
+	assert.Equal(t, existing, *req.Messages[4].ReasoningContent, "existing reasoning_content preserved")
+}
+
 func TestNormalizeUnknownToolTypesForOpenCode(t *testing.T) {
 	// Variant #8 seen in production: codex-family clients declare tools with
 	// type "tool_search"; opencode's serde only accepts "function". Unknown

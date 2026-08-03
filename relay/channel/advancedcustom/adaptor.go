@@ -203,6 +203,17 @@ func normalizeRequestForOpenCode(request *dto.GeneralOpenAIRequest) {
 			if len(normalized) != len(toolCalls) || toolCallsChanged(toolCalls, normalized) {
 				request.Messages[i].SetToolCalls(normalized)
 			}
+			// DeepSeek thinking mode (behind opencode) rejects assistant
+			// messages that carry tool_calls but no reasoning_content ("The
+			// reasoning_content in the thinking mode must be passed back").
+			// Codex-family clients send reasoning as encrypted_content only,
+			// so no real text survives the responses->chat conversion —
+			// synthesize a minimal placeholder. Plain assistant history is
+			// accepted without one, so only tool-call messages are touched.
+			if request.Messages[i].Role == "assistant" && request.Messages[i].GetReasoningContent() == "" {
+				placeholder := "..."
+				request.Messages[i].ReasoningContent = &placeholder
+			}
 		}
 	}
 	// tools declarations carry the same type field as tool_calls and are
