@@ -48,6 +48,31 @@ func TestResponsesRequestToChatCompletionsDeveloperRoleNormalized(t *testing.T) 
 				{Role: "tool", ToolCallId: "call_1", Content: "ok"},
 			},
 		},
+		{
+			// GPT-5 custom (freeform) tool output items carry "role":"custom",
+			// which upstreams reject with 400 "unknown variant `custom`".
+			// They must be mapped to a chat "tool" message, never passed through.
+			name: "custom_tool_call_output with role custom maps to tool",
+			input: json.RawMessage(`[
+				{"role": "user", "content": "run the tool"},
+				{"type": "custom_tool_call", "id": "ct_1", "name": "web_search", "input": "{\"q\":\"x\"}"},
+				{"type": "custom_tool_call_output", "id": "ct_1", "role": "custom", "output": "search results"}
+			]`),
+			want: []dto.Message{
+				{Role: "user", Content: "run the tool"},
+				{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"ct_1","type":"custom","custom":{"type":"custom_tool_call","id":"ct_1","name":"web_search","input":"{\"q\":\"x\"}"},"function":{"name":"web_search","arguments":"{\"q\":\"x\"}"}}]`)},
+				{Role: "tool", ToolCallId: "ct_1", Content: "search results"},
+			},
+		},
+		{
+			name: "custom_tool_call_output falls back to id when call_id missing",
+			input: json.RawMessage(`[
+				{"type": "custom_tool_call_output", "id": "ct_9", "role": "custom", "output": "done"}
+			]`),
+			want: []dto.Message{
+				{Role: "tool", ToolCallId: "ct_9", Content: "done"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -62,6 +87,17 @@ func TestResponsesRequestToChatCompletionsDeveloperRoleNormalized(t *testing.T) 
 				assert.Equal(t, tt.want[i].Role, got.Messages[i].Role, "messages[%d].role", i)
 				assert.Equal(t, tt.want[i].Content, got.Messages[i].Content, "messages[%d].content", i)
 				assert.Equal(t, tt.want[i].ToolCallId, got.Messages[i].ToolCallId, "messages[%d].tool_call_id", i)
+				if len(tt.want[i].ToolCalls) == 0 && len(got.Messages[i].ToolCalls) == 0 {
+					continue
+				}
+				var wantTC, gotTC []map[string]any
+				if len(tt.want[i].ToolCalls) > 0 {
+					require.NoError(t, json.Unmarshal(tt.want[i].ToolCalls, &wantTC))
+				}
+				if len(got.Messages[i].ToolCalls) > 0 {
+					require.NoError(t, json.Unmarshal(got.Messages[i].ToolCalls, &gotTC))
+				}
+				assert.Equal(t, wantTC, gotTC, "messages[%d].tool_calls", i)
 			}
 		})
 	}

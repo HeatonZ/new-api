@@ -183,6 +183,17 @@ func responsesInputItemToChatMessages(item map[string]any, messages []dto.Messag
 		callID := strings.TrimSpace(kitutil.Interface2String(item["call_id"]))
 		content := responseToolOutputToChatContent(item["output"])
 		return append(messages, dto.Message{Role: "tool", ToolCallId: callID, Content: content}), nil
+	case responsesInputTypeCustomToolOutput:
+		// GPT-5 custom (freeform) tool output: OpenAI sends these items with
+		// "role":"custom", which upstreams (opencode zen/go, DeepSeek) reject
+		// with 400 "unknown variant `custom`". It is semantically a tool result,
+		// so map it to a chat "tool" message like function_call_output.
+		callID := strings.TrimSpace(kitutil.Interface2String(item["call_id"]))
+		if callID == "" {
+			callID = strings.TrimSpace(kitutil.Interface2String(item["id"]))
+		}
+		content := responseToolOutputToChatContent(item["output"])
+		return append(messages, dto.Message{Role: "tool", ToolCallId: callID, Content: content}), nil
 	}
 
 	role := strings.TrimSpace(kitutil.Interface2String(item["role"]))
