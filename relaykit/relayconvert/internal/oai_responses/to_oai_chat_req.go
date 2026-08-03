@@ -189,6 +189,13 @@ func responsesInputItemToChatMessages(item map[string]any, messages []dto.Messag
 	if role == "" {
 		role = "user"
 	}
+	// The Responses API permits a "developer" role (semantically a system
+	// instruction), but many OpenAI-compatible upstreams (DeepSeek, opencode
+	// zen/go, etc.) reject it with a 400. Normalize to "system" so converted
+	// chat bodies are accepted and the prompt prefix stays cache-stable.
+	if role == "developer" {
+		role = "system"
+	}
 	content, err := responsesInputContentToChatContent(item["content"])
 	if err != nil {
 		return nil, err
