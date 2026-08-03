@@ -27,6 +27,47 @@ const ChannelName = "advanced_custom"
 
 const advancedCustomModelPlaceholder = "{model}"
 
+// isOpenCodeUpstream reports whether the channel targets the opencode
+// zen/go gateway. opencode Console Go converts Responses to Chat internally
+// and its serde only accepts system/user/assistant/tool roles and
+// tool_calls[].type == "function" — GPT-5's "developer" role and "custom"
+// tool type must be normalized here, and only here, so other upstreams
+// (OpenAI native, DeepSeek direct, etc.) keep their native semantics.
+func isOpenCodeUpstream(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	baseURL := strings.ToLower(strings.TrimSpace(info.ChannelBaseUrl))
+	return strings.Contains(baseURL, "opencode.ai")
+}
+
+// normalizeMessagesForOpenCode adapts chat messages to what opencode
+// Console Go's serde accepts: developer -> system and tool_calls[].type
+// custom -> function. The raw custom payload (tool_calls[].custom) is
+// preserved for upstreams that can read it.
+func normalizeMessagesForOpenCode(messages []dto.Message) []dto.Message {
+	for i := range messages {
+		if messages[i].Role == "developer" {
+			messages[i].Role = "system"
+		}
+		toolCalls := messages[i].ParseToolCalls()
+		if len(toolCalls) == 0 {
+			continue
+		}
+		changed := false
+		for j := range toolCalls {
+			if toolCalls[j].Type == dto.CustomType {
+				toolCalls[j].Type = "function"
+				changed = true
+			}
+		}
+		if changed {
+			messages[i].SetToolCalls(toolCalls)
+		}
+	}
+	return messages
+}
+
 type Adaptor struct {
 	openaiAdaptor openai.Adaptor
 	claudeAdaptor claude.Adaptor
@@ -45,6 +86,9 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
+	if isOpenCodeUpstream(info) {
+		request.Messages = normalizeMessagesForOpenCode(request.Messages)
+	}
 	converter, err := a.resolveForConversion(c, info)
 	if err != nil {
 		return nil, err
@@ -131,6 +175,9 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 		chatRequest, ok := result.Value.(*dto.GeneralOpenAIRequest)
 		if !ok {
 			return nil, fmt.Errorf("expected OpenAI chat completions request, got %T", result.Value)
+		}
+		if isOpenCodeUpstream(info) {
+			chatRequest.Messages = normalizeMessagesForOpenCode(chatRequest.Messages)
 		}
 		return a.convertOpenAICompatibleRequest(c, info, chatRequest)
 	case relayconvert.ConverterOpenAIResponsesToGemini:

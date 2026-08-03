@@ -200,13 +200,6 @@ func responsesInputItemToChatMessages(item map[string]any, messages []dto.Messag
 	if role == "" {
 		role = "user"
 	}
-	// The Responses API permits a "developer" role (semantically a system
-	// instruction), but many OpenAI-compatible upstreams (DeepSeek, opencode
-	// zen/go, etc.) reject it with a 400. Normalize to "system" so converted
-	// chat bodies are accepted and the prompt prefix stays cache-stable.
-	if role == "developer" {
-		role = "system"
-	}
 	content, err := responsesInputContentToChatContent(item["content"])
 	if err != nil {
 		return nil, err
@@ -313,16 +306,13 @@ func responsesCustomToolCallItemToChatToolCall(item map[string]any) (dto.ToolCal
 	if err != nil {
 		return dto.ToolCallRequest{}, err
 	}
-	// GPT-5 custom (freeform) tool calls carry type "custom" in the Responses
-	// API, but chat/completions tool_calls[].type only supports "function"
-	// upstreams (opencode zen/go, DeepSeek) reject "custom" with 400
-	// "unknown variant `custom`, expected `function`". Normalize the type to
-	// "function" and keep the raw custom payload in the Custom field (serde
-	// ignores unknown fields by default, so supporting upstreams can still
-	// read it).
+	// Preserve the native "custom" type: the raw shape is kept for upstreams
+	// that understand GPT-5 custom tools. Upstreams that only accept
+	// "function" (e.g. opencode Console Go) are normalized at the channel
+	// adaptor layer where the upstream identity is known.
 	return dto.ToolCallRequest{
 		ID:     responsesCallID(item),
-		Type:   "function",
+		Type:   dto.CustomType,
 		Custom: raw,
 		Function: dto.FunctionRequest{
 			Name:      strings.TrimSpace(kitutil.Interface2String(item["name"])),

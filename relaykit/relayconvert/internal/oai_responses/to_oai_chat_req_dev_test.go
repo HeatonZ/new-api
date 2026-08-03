@@ -9,31 +9,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestResponsesRequestToChatCompletionsDeveloperRoleNormalized verifies that a
-// Responses-API "developer" input item is normalized to "system" during the
-// responses->chat conversion, while other roles (user/assistant/tool) pass
-// through untouched. DeepSeek / opencode zen-go reject "developer" with a 400.
-func TestResponsesRequestToChatCompletionsDeveloperRoleNormalized(t *testing.T) {
+// TestResponsesRequestToChatCompletionsConversion verifies the responses->chat
+// converter keeps native shapes (developer role and custom tool type pass
+// through untouched) and only performs format-necessary mappings:
+// custom_tool_call_output -> chat "tool" message (chat has no "custom" role).
+// Upstream-specific normalization (developer->system, custom->function) is done
+// at the channel adaptor layer (advancedcustom) where the upstream is known.
+func TestResponsesRequestToChatCompletionsConversion(t *testing.T) {
 	tests := []struct {
 		name  string
 		input json.RawMessage
 		want  []dto.Message
 	}{
 		{
-			name: "developer first, user second",
+			name: "developer role passes through untouched",
 			input: json.RawMessage(`[
 				{"role": "developer", "content": [{"type": "input_text", "text": "you are a helpful assistant"}]},
 				{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}
 			]`),
 			want: []dto.Message{
-				{Role: "system", Content: "you are a helpful assistant"},
+				{Role: "developer", Content: "you are a helpful assistant"},
 				{Role: "user", Content: "hi"},
 			},
 		},
 		{
 			name:  "developer with plain string content",
 			input: json.RawMessage(`[{"role": "developer", "content": "system rules"}]`),
-			want:  []dto.Message{{Role: "system", Content: "system rules"}},
+			want:  []dto.Message{{Role: "developer", Content: "system rules"}},
 		},
 		{
 			name: "assistant and tool roles untouched",
@@ -49,9 +51,9 @@ func TestResponsesRequestToChatCompletionsDeveloperRoleNormalized(t *testing.T) 
 			},
 		},
 		{
-			// GPT-5 custom (freeform) tool output items carry "role":"custom",
-			// which upstreams reject with 400 "unknown variant `custom`".
-			// They must be mapped to a chat "tool" message, never passed through.
+			// custom_tool_call_output items carry "role":"custom"; chat has no
+			// such role, so the converter maps them to a "tool" message. This is
+			// format-necessary for ANY chat upstream, not opencode-specific.
 			name: "custom_tool_call_output with role custom maps to tool",
 			input: json.RawMessage(`[
 				{"role": "user", "content": "run the tool"},
@@ -60,7 +62,7 @@ func TestResponsesRequestToChatCompletionsDeveloperRoleNormalized(t *testing.T) 
 			]`),
 			want: []dto.Message{
 				{Role: "user", Content: "run the tool"},
-				{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"ct_1","type":"function","custom":{"type":"custom_tool_call","id":"ct_1","name":"web_search","input":"{\"q\":\"x\"}"},"function":{"name":"web_search","arguments":"{\"q\":\"x\"}"}}]`)},
+				{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"ct_1","type":"custom","custom":{"type":"custom_tool_call","id":"ct_1","name":"web_search","input":"{\"q\":\"x\"}"},"function":{"name":"web_search","arguments":"{\"q\":\"x\"}"}}]`)},
 				{Role: "tool", ToolCallId: "ct_1", Content: "search results"},
 			},
 		},
