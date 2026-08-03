@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func ptr(s string) *string { return &s }
+
 // TestResponsesRequestToChatCompletionsConversion verifies the responses->chat
 // converter keeps native shapes (developer role and custom tool type pass
 // through untouched) and only performs format-necessary mappings:
@@ -75,6 +77,45 @@ func TestResponsesRequestToChatCompletionsConversion(t *testing.T) {
 				{Role: "tool", ToolCallId: "ct_9", Content: "done"},
 			},
 		},
+		{
+			// DeepSeek thinking mode requires historical assistant messages to
+			// carry reasoning_content back to the API. A Responses "reasoning"
+			// item in input must fold into the preceding assistant message.
+			name: "reasoning item folds into preceding assistant reasoning_content",
+			input: json.RawMessage(`[
+				{"role": "user", "content": "think hard"},
+				{"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "step one"}], "content": [{"type": "output_text", "text": "step two"}]},
+				{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "answer"}]}
+			]`),
+			want: []dto.Message{
+				{Role: "user", Content: "think hard"},
+				{Role: "assistant", Content: "answer", ReasoningContent: ptr("step onestep two")},
+			},
+		},
+		{
+			name: "reasoning item without preceding assistant is dropped",
+			input: json.RawMessage(`[
+				{"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "orphan reasoning"}]}
+			]`),
+			want: []dto.Message{},
+		},
+		{
+			// Tool-call turns also carry a reasoning item before the function
+			// call; the reasoning must land on the assistant message that holds
+			// the tool_calls so DeepSeek thinking mode accepts the replay.
+			name: "reasoning folds into assistant with tool calls",
+			input: json.RawMessage(`[
+				{"role": "user", "content": "look it up"},
+				{"type": "reasoning", "id": "rs_2", "summary": [{"type": "summary_text", "text": "planning"}], "content": [{"type": "output_text", "text": "details"}]},
+				{"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "lookup", "arguments": "{\"q\":\"x\"}"},
+				{"type": "function_call_output", "call_id": "call_1", "output": "result"}
+			]`),
+			want: []dto.Message{
+				{Role: "user", Content: "look it up"},
+				{Role: "assistant", ReasoningContent: ptr("planningdetails"), ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]`)},
+				{Role: "tool", ToolCallId: "call_1", Content: "result"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -89,6 +130,7 @@ func TestResponsesRequestToChatCompletionsConversion(t *testing.T) {
 				assert.Equal(t, tt.want[i].Role, got.Messages[i].Role, "messages[%d].role", i)
 				assert.Equal(t, tt.want[i].Content, got.Messages[i].Content, "messages[%d].content", i)
 				assert.Equal(t, tt.want[i].ToolCallId, got.Messages[i].ToolCallId, "messages[%d].tool_call_id", i)
+				assert.Equal(t, tt.want[i].GetReasoningContent(), got.Messages[i].GetReasoningContent(), "messages[%d].reasoning_content", i)
 				if len(tt.want[i].ToolCalls) == 0 && len(got.Messages[i].ToolCalls) == 0 {
 					continue
 				}

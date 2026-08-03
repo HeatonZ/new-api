@@ -158,6 +158,11 @@ func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Mess
 			}
 			messages = nextMessages
 		}
+		// Drop a trailing reasoning placeholder (a "reasoning" item whose
+		// assistant message never followed). It has no chat equivalent.
+		if len(messages) > 0 && messages[len(messages)-1].Role == "" {
+			messages = messages[:len(messages)-1]
+		}
 		return messages, nil
 	default:
 		return nil, fmt.Errorf("unsupported responses input type %q", kitutil.GetJsonType(req.Input))
@@ -194,6 +199,14 @@ func responsesInputItemToChatMessages(item map[string]any, messages []dto.Messag
 		}
 		content := responseToolOutputToChatContent(item["output"])
 		return append(messages, dto.Message{Role: "tool", ToolCallId: callID, Content: content}), nil
+	case "reasoning":
+		// DeepSeek thinking mode requires every historical assistant message to
+		// carry its reasoning_content back to the API (400 "the reasoning_content
+		// in the thinking mode must be passed back" otherwise). The Responses API
+		// represents past reasoning as a "reasoning" item in input, which appears
+		// immediately BEFORE the assistant message it belongs to. Stash the text
+		// so the next assistant message absorbs it as reasoning_content.
+		return append(messages, dto.Message{Role: "", Content: "", ReasoningContent: ptr(responsesReasoningItemText(item))}), nil
 	}
 
 	role := strings.TrimSpace(kitutil.Interface2String(item["role"]))
@@ -203,6 +216,19 @@ func responsesInputItemToChatMessages(item map[string]any, messages []dto.Messag
 	content, err := responsesInputContentToChatContent(item["content"])
 	if err != nil {
 		return nil, err
+	}
+	// If the previous entry is a reasoning placeholder (Role=="" carrying
+	// reasoning_content from a preceding "reasoning" item), merge it into this
+	// message (it belongs to the assistant message that follows it) and drop
+	// the placeholder.
+	if len(messages) > 0 && messages[len(messages)-1].Role == "" {
+		last := messages[len(messages)-1]
+		messages = messages[:len(messages)-1]
+		rc := last.GetReasoningContent()
+		if role == "assistant" && rc != "" {
+			return append(messages, dto.Message{Role: role, Content: content, ReasoningContent: &rc}), nil
+		}
+		// reasoning with no following assistant message: drop it
 	}
 	return append(messages, dto.Message{Role: role, Content: content}), nil
 }
@@ -323,7 +349,20 @@ func responsesCustomToolCallItemToChatToolCall(item map[string]any) (dto.ToolCal
 
 func appendToolCallToLastAssistant(messages []dto.Message, toolCall dto.ToolCallRequest) []dto.Message {
 	if len(messages) == 0 || messages[len(messages)-1].Role != "assistant" {
-		messages = append(messages, dto.Message{Role: "assistant"})
+		// A reasoning placeholder (Role=="") may sit between this tool call and
+		// its assistant message (responses order: reasoning -> function_call ->
+		// function_call_output). Fold the placeholder into the new assistant
+		// message so reasoning_content survives.
+		var rc string
+		if len(messages) > 0 && messages[len(messages)-1].Role == "" {
+			rc = messages[len(messages)-1].GetReasoningContent()
+			messages = messages[:len(messages)-1]
+		}
+		msg := dto.Message{Role: "assistant"}
+		if rc != "" {
+			msg.ReasoningContent = &rc
+		}
+		messages = append(messages, msg)
 	}
 
 	idx := len(messages) - 1
@@ -332,6 +371,32 @@ func appendToolCallToLastAssistant(messages []dto.Message, toolCall dto.ToolCall
 	toolCallsRaw, _ := kitutil.Marshal(toolCalls)
 	messages[idx].ToolCalls = toolCallsRaw
 	return messages
+}
+
+// responsesReasoningItemText extracts the reasoning text from a Responses API
+// "reasoning" input item. Reasoning items carry their text in summary[]
+// (summary_text parts) and/or content[] (output_text / reasoning parts).
+func responsesReasoningItemText(item map[string]any) string {
+	var sb strings.Builder
+	collect := func(raw any) {
+		parts, ok := raw.([]any)
+		if !ok {
+			return
+		}
+		for _, rawPart := range parts {
+			part, ok := rawPart.(map[string]any)
+			if !ok {
+				continue
+			}
+			partType := strings.TrimSpace(kitutil.Interface2String(part["type"]))
+			if partType == "summary_text" || partType == "output_text" || partType == "reasoning" || partType == "text" {
+				sb.WriteString(kitutil.Interface2String(part["text"]))
+			}
+		}
+	}
+	collect(item["summary"])
+	collect(item["content"])
+	return sb.String()
 }
 
 func responsesRequestToolsToChat(raw json.RawMessage) ([]dto.ToolCallRequest, error) {
