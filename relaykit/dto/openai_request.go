@@ -252,11 +252,28 @@ func (r *GeneralOpenAIRequest) GetSystemRoleName() string {
 
 const CustomType = "custom"
 
+// ToolCallRequest is a chat tool declaration or tool call. Raw holds the
+// original JSON of the entry so upstream-specific normalization (e.g. opencode
+// namespace flattening) can recover fields the typed struct drops.
 type ToolCallRequest struct {
 	ID       string          `json:"id,omitempty"`
 	Type     string          `json:"type"`
 	Function FunctionRequest `json:"function,omitempty"`
 	Custom   json.RawMessage `json:"custom,omitempty"`
+	Raw      json.RawMessage `json:"-"`
+}
+
+func (t *ToolCallRequest) UnmarshalJSON(data []byte) error {
+	type alias ToolCallRequest
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*t = ToolCallRequest(a)
+	if len(data) > 0 {
+		t.Raw = append(json.RawMessage(nil), data...)
+	}
+	return nil
 }
 
 type FunctionRequest struct {

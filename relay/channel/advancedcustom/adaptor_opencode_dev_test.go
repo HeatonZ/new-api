@@ -84,16 +84,18 @@ func TestNormalizeNamespaceToolsForOpenCode(t *testing.T) {
 	// Codex wraps MCP tools in {"type":"namespace","name":"mcp__open_websearch__",
 	// "tools":[{function...}]} (openai/codex#23186). opencode zen/go rejects the
 	// wrapper, so each child must be flattened into a top-level function tool.
+	namespaceRaw := json.RawMessage(`{
+		"type": "namespace",
+		"name": "mcp__open_websearch__",
+		"tools": [
+			{"type": "function", "name": "search", "description": "web search", "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}},
+			{"type": "function", "name": "fetchWebContent", "description": "fetch url", "input_schema": {"type": "object"}}
+		]
+	}`)
+
 	req := &dto.GeneralOpenAIRequest{
 		Tools: []dto.ToolCallRequest{
-			{Type: "namespace", Custom: json.RawMessage(`{
-				"type": "namespace",
-				"name": "mcp__open_websearch__",
-				"tools": [
-					{"type": "function", "name": "search", "description": "web search", "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}},
-					{"type": "function", "name": "fetchWebContent", "description": "fetch url", "input_schema": {"type": "object"}}
-				]
-			}`)},
+			{Type: "namespace", Raw: namespaceRaw},
 			{Type: "function", Function: dto.FunctionRequest{Name: "lookup"}},
 		},
 	}
@@ -108,4 +110,38 @@ func TestNormalizeNamespaceToolsForOpenCode(t *testing.T) {
 	assert.Equal(t, "mcp__open_websearch___fetchWebContent", req.Tools[1].Function.Name)
 	require.NotNil(t, req.Tools[1].Function.Parameters, "input_schema aliased to parameters")
 	assert.Equal(t, "lookup", req.Tools[2].Function.Name, "plain function untouched")
+}
+
+func TestNormalizeNamespaceToolsFromCustomFallback(t *testing.T) {
+	// responses->chat path keeps the raw tool in Custom instead of Raw; the
+	// normalization must fall back to it.
+	req := &dto.GeneralOpenAIRequest{
+		Tools: []dto.ToolCallRequest{
+			{Type: "namespace", Custom: json.RawMessage(`{
+				"type": "namespace",
+				"name": "mcp__fs__",
+				"tools": [
+					{"type": "function", "name": "read", "description": "read file", "parameters": {"type": "object"}}
+				]
+			}`)},
+		},
+	}
+
+	normalizeRequestForOpenCode(req)
+
+	require.Len(t, req.Tools, 1)
+	assert.Equal(t, "function", req.Tools[0].Type)
+	assert.Equal(t, "mcp__fs___read", req.Tools[0].Function.Name)
+}
+
+func TestToolCallRequestUnmarshalPreservesRaw(t *testing.T) {
+	raw := json.RawMessage(`{"id":"ct_1","type":"namespace","name":"mcp__x__","tools":[]}`)
+	var tc dto.ToolCallRequest
+	require.NoError(t, json.Unmarshal(raw, &tc))
+	assert.Equal(t, "namespace", tc.Type)
+	assert.Equal(t, `{"id":"ct_1","type":"namespace","name":"mcp__x__","tools":[]}`, string(tc.Raw), "raw JSON preserved for upstream normalization")
+	// re-marshal must not leak the Raw field
+	out, err := json.Marshal(tc)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "\"raw\"", "raw field must not serialize")
 }

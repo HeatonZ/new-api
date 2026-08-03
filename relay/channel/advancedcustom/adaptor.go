@@ -89,8 +89,12 @@ func normalizeToolCallsForOpenCode(toolCalls []dto.ToolCallRequest) []dto.ToolCa
 			// flatten children into top-level functions.
 			changed = true
 			ns := tc
+			rawJSON := ns.Raw
+			if len(rawJSON) == 0 {
+				rawJSON = ns.Custom
+			}
 			var raw map[string]any
-			if len(ns.Custom) > 0 && kitutil.Unmarshal(ns.Custom, &raw) == nil {
+			if len(rawJSON) > 0 && kitutil.Unmarshal(rawJSON, &raw) == nil {
 				prefix := strings.TrimSpace(kitutil.Interface2String(raw["name"]))
 				if tools, ok := raw["tools"].([]any); ok {
 					for _, t := range tools {
