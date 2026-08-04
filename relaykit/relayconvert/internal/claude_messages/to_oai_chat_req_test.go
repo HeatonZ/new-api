@@ -171,3 +171,41 @@ func TestClaudeMessagesRequestToOpenAIChatCacheStability(t *testing.T) {
 		t.Errorf("no message should remain system after rewrite, got roles %v", roles)
 	}
 }
+
+func TestClaudeThinkingBlockToReasoningContent(t *testing.T) {
+	// DeepSeek thinking mode requires reasoning_content on every assistant
+	// turn in history. Claude Code sends assistant messages with a thinking
+	// content block; the converter must surface it as reasoning_content or
+	// opencode returns 400 ("The reasoning_content in the thinking mode must
+	// be passed back to the API").
+	thinking := "Let me think about this step by step."
+	assistantText := "Here is my answer."
+	req := &dto.ClaudeRequest{
+		Model: "deepseek-v4-flash",
+		Messages: []dto.ClaudeMessage{
+			{Role: "user", Content: "solve this"},
+			{
+				Role: "assistant",
+				Content: []dto.ClaudeMediaMessage{
+					{Type: "thinking", Thinking: &thinking},
+					{Type: "text", Text: &assistantText},
+				},
+			},
+		},
+	}
+	out, err := ClaudeMessagesRequestToOpenAIChat(*req, nil)
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	if len(out.Messages) != 2 {
+		t.Fatalf("got %d messages, want 2", len(out.Messages))
+	}
+	asst := out.Messages[1]
+	if asst.Role != "assistant" {
+		t.Fatalf("message[1] role = %q, want assistant", asst.Role)
+	}
+	rc := asst.GetReasoningContent()
+	if rc != thinking {
+		t.Errorf("reasoning_content = %q, want %q (thinking block must be surfaced)", rc, thinking)
+	}
+}

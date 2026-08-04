@@ -266,6 +266,18 @@ func ClaudeMessagesRequestToOpenAIChat(claudeRequest dto.ClaudeRequest, info con
 						CacheControl: mediaMsg.CacheControl,
 					}
 					mediaMessages = append(mediaMessages, message)
+				case "thinking", "redacted_thinking":
+					// Claude Code thinking blocks carry the reasoning text DeepSeek
+					// thinking mode requires on every assistant turn. Surface it as
+					// reasoning_content so the history round-trips (mirrors the
+					// oai_responses placeholder handling); the opencode
+					// /v1/messages passthrough needs it verbatim.
+					if mediaMsg.Thinking != nil && *mediaMsg.Thinking != "" {
+						if openAIMessage.ReasoningContent == nil {
+							openAIMessage.ReasoningContent = new(string)
+						}
+						*openAIMessage.ReasoningContent = *mediaMsg.Thinking
+					}
 				case "image":
 					imageData := fmt.Sprintf("data:%s;base64,%s", mediaMsg.Source.MediaType, mediaMsg.Source.Data)
 					mediaMessage := dto.MediaContent{
