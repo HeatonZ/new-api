@@ -282,6 +282,15 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 		if !ok {
 			return nil, fmt.Errorf("expected OpenAI chat completions request, got %T", result.Value)
 		}
+		// Run the same opencode normalization as the OpenAI chat path: it
+		// backfills a reasoning placeholder onto assistant tool-call turns,
+		// which DeepSeek thinking mode requires on history round-trips (400
+		// otherwise). The claude->chat converter itself surfaces thinking
+		// blocks as reasoning_content; this covers the remaining case where
+		// a tool-call turn carries none.
+		if isOpenCodeUpstream(info) {
+			normalizeRequestForOpenCode(chatRequest)
+		}
 		return a.convertOpenAICompatibleRequest(c, info, chatRequest)
 	default:
 		return nil, fmt.Errorf("converter %q does not support Anthropic Messages requests", converter)
